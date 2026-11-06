@@ -170,7 +170,7 @@ with tab_predict:
     if not state:
         st.info("Train models in Tab 1 first. Models remain in this Streamlit session until reset or server restart.")
     else:
-        blind_file = st.file_uploader("Upload blind external CSV (predictors only)", type="csv", key="blind_upload")
+        blind_file = st.file_uploader("Upload blind external CSV (predictors only)", type="csv", key="blind_upload", on_change=lambda: st.session_state.pop("blind_predictions", None))
         blind = read_csv(blind_file)
         if blind is not None:
             missing = [c for c in state["features"] if c not in blind.columns]
@@ -227,7 +227,11 @@ with tab_validate:
                             raise ValueError("Answer-key case IDs must match predictions exactly.")
                         joined = joined.drop(columns=["_merge"])
                     else:
-                        raise ValueError("Both blind CSV and answer key must contain a unique case_id for safe matching.")
+                        if len(key) != len(pred_df):
+                            raise ValueError("Answer key row count must equal prediction row count.")
+                        st.warning("No case_id columns found. Matching by row position; confirm the answer key has exactly the same row order as the blind CSV.")
+                        joined = pred_df.copy()
+                        joined[target] = key[target].to_numpy()
                     if joined[target].isna().any():
                         raise ValueError("Answer key contains missing target values.")
                     actual = joined[target]
