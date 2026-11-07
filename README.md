@@ -1,6 +1,14 @@
-# ML Predictive Analysis Explorer v0.2
+# ML Predictive Analysis Explorer v0.3
 
-Streamlit research prototype comparing Random Forest and XGBoost with **separate training, blind prediction, and external validation**.
+Streamlit research prototype comparing six regression models:
+- Random Forest
+- XGBoost
+- Bayesian Ridge Regression
+- Gaussian Process Regression (RBF + white noise kernel)
+- Elastic Net
+- Quadratic Response Surface Methodology (degree-2 polynomial with ridge regularization)
+
+Classification continues to support Random Forest and XGBoost only.
 
 ## Run
 
@@ -9,20 +17,20 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## Three-tab workflow
+## Workflow
 
-1. **Train:** Upload `training_300.csv`; target `seal_strength_N_per_15mm`; four process predictors; Regression; both models; seed 42. The app splits the training CSV into fitting, calibration and internal holdout sets. Models are retained in the current Streamlit session.
-2. **Predict:** Upload `external_test_30_blind.csv`, click **Predict using retained models**, and download `external_predictions.csv`. The fitted models are not retrained.
-3. **Validate:** Upload `external_test_30_answer_key.csv` only after predictions. Download `external_validation_results.csv`. The provided example files lack `case_id`; the app matches them by **unchanged row order** and warns about this. For future datasets, use a unique `case_id` in both external files for safer matching.
+1. Train: Upload labeled CSV; select regression, target, predictors and models. Shared fit/calibration/internal-test splits allow fair comparisons. Bayesian Ridge, Elastic Net and quadratic RSM use standardized numeric features. GPR uses a fitted kernel and is best suited to smaller datasets.
+2. Predict: Upload a blind CSV with the same predictors. Fitted models predict without retraining. Bayesian Ridge and GPR additionally export model-based predictive standard deviations.
+3. Validate: Upload the answer key. Use a unique `case_id` in both blind and answer-key files whenever possible; otherwise the app warns that it is matching by row position. Compare MAE, RMSE, R², bias, empirical split-conformal coverage and mean interval width.
 
-## Interpretation
+## Reproducibility and interpretation
 
-Regression reports MAE, RMSE, R² and mean prediction bias. The calibration split provides symmetric absolute-residual split-conformal prediction intervals, with empirical coverage reported on internal and external sets. These are marginal coverage estimates under exchangeability, not confidence probabilities for individual observations. Classification reports accuracy and macro F1; regression intervals are not available for classification.
+The original 30-row external dataset has been inspected and is now a development benchmark, not an untouched final test set for v0.3 model selection. Reserve a new independent dataset for final assessment.
 
-## Limitations
+All six models use absolute-residual split-conformal intervals from the same calibration partition. Bayesian Ridge/GPR predictive standard deviations are separate model-based uncertainty estimates; do not interpret them as calibrated confidence probabilities. GPR kernel fitting can be computationally expensive for larger datasets.
 
-Research prototype only; not validated for clinical or regulated decisions. Model/session state is lost when the Streamlit session or server restarts. No persistent model storage, grouped splitting, automated leakage detection, cross-validation or hyperparameter tuning. Do not use external outcomes to tune models or calibrate intervals. Do not upload proprietary or confidential datasets without approval.
+The default v0.3 model parameters are illustrative, not optimized. This is a research prototype, not a qualified medical-device or regulatory decision tool. Do not upload proprietary data without authorization.
 
-## Deployment
+## v0.2 milestone
 
-Streamlit Community Cloud deploys the repository's `main` branch and `app.py`. Existing deployment URL should remain unchanged when the connected app follows this repository.
+The original v0.2 code is preserved at branch `milestone/v0.2`. The deployed app URL should remain unchanged when Streamlit Cloud tracks this repository's main branch.
