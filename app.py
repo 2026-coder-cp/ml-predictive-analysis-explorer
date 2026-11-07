@@ -9,6 +9,10 @@ import streamlit as st
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import BayesianRidge, ElasticNet, Ridge
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import ConstantKernel, RBF, WhiteKernel
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures
 from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
@@ -16,8 +20,8 @@ from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
 
 st.set_page_config(page_title="ML Predictive Analysis Explorer", page_icon="📈", layout="wide")
-st.title("ML Predictive Analysis Explorer v0.2")
-st.caption("Independent training, blind prediction, and external validation | Random Forest + XGBoost")
+st.title("ML Predictive Analysis Explorer v0.3")
+st.caption("Six-model regression comparison | Independent training, blind prediction, and external validation")
 st.warning("Research-only prototype. Not qualified for regulated decisions. Do not upload confidential data without authorization.")
 
 def read_csv(upload):
@@ -41,24 +45,47 @@ def scores(actual, predicted, task):
 def build_pipeline(x, task, name, seed, n_classes):
     numeric = x.select_dtypes(include=np.number).columns.tolist()
     categorical = [c for c in x.columns if c not in numeric]
+    scaled = name in ("Bayesian Ridge", "Gaussian Process", "Elastic Net", "Quadratic RSM")
     transformers = []
     if numeric:
-        transformers.append(("num", SimpleImputer(strategy="median"), numeric))
+        numeric_steps = [("impute", SimpleImputer(strategy="median"))]
+        if scaled:
+            numeric_steps.append(("scale", StandardScaler()))
+        transformers.append(("num", Pipeline(numeric_steps), numeric))
     if categorical:
         transformers.append(("cat", Pipeline([
             ("impute", SimpleImputer(strategy="most_frequent")),
-            ("encode", OneHotEncoder(handle_unknown="ignore"))]), categorical))
-    preprocessor = ColumnTransformer(transformers)
+            ("encode", OneHotEncoder(handle_unknown="ignore", sparse_output=False if scaled else True))]), categorical))
+    preprocessor = ColumnTransformer(transformers, sparse_threshold=0 if scaled else 0.3)
     if task == "Regression":
-        estimator = (RandomForestRegressor(n_estimators=200, random_state=seed, n_jobs=-1)
-                     if name == "Random Forest" else
-                     XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.05, random_state=seed, n_jobs=-1))
+        if name == "Random Forest":
+            estimator = RandomForestRegressor(n_estimators=200, random_state=seed, n_jobs=-1)
+        elif name == "XGBoost":
+            estimator = XGBRegressor(n_estimators=200, max_depth=4, learning_rate=0.05, random_state=seed, n_jobs=-1)
+        elif name == "Bayesian Ridge":
+            estimator = BayesianRidge()
+        elif name == "Gaussian Process":
+            kernel = ConstantKernel(1.0, (1e-2, 1e2)) * RBF(length_scale=1.0, length_scale_bounds=(1e-2, 1e2)) + WhiteKernel(noise_level=0.1, noise_level_bounds=(1e-4, 1e1))
+            estimator = GaussianProcessRegressor(kernel=kernel, alpha=1e-6, normalize_y=True, random_state=seed, n_restarts_optimizer=1)
+        elif name == "Elastic Net":
+            estimator = ElasticNet(alpha=0.02, l1_ratio=0.5, max_iter=10000, random_state=seed)
+        elif name == "Quadratic RSM":
+            estimator = Pipeline([("polynomial", PolynomialFeatures(degree=2, include_bias=False)), ("ridge", Ridge(alpha=0.01))])
+        else:
+            raise ValueError(f"Unsupported regression model: {name}")
     else:
         estimator = (RandomForestClassifier(n_estimators=200, random_state=seed, n_jobs=-1)
                      if name == "Random Forest" else
                      XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05, random_state=seed,
                                    n_jobs=-1, objective="multi:softprob" if n_classes > 2 else "binary:logistic"))
     return Pipeline([("preprocess", preprocessor), ("model", estimator)])
+
+def model_prediction_std(pipeline, x, name):
+    if name not in ("Bayesian Ridge", "Gaussian Process"):
+        return None
+    transformed = pipeline.named_steps["preprocess"].transform(x)
+    _, std = pipeline.named_steps["model"].predict(transformed, return_std=True)
+    return np.asarray(std)
 
 def clear_state():
     st.session_state.pop("trained", None)
@@ -79,7 +106,10 @@ with tab_train:
             candidate = [c for c in df.columns if c != target]
             features = st.multiselect("Predictor columns (exclude row IDs)", candidate, default=candidate, on_change=clear_state)
             task = st.radio("Task", ["Regression", "Classification"], horizontal=True, on_change=clear_state)
-            model_names = st.multiselect("Models", ["Random Forest", "XGBoost"], default=["Random Forest", "XGBoost"], on_change=clear_state)
+            available_models = ["Random Forest", "XGBoost"] if task == "Classification" else ["Random Forest", "XGBoost", "Bayesian Ridge", "Gaussian Process", "Elastic Net", "Quadratic RSM"]
+            model_names = st.multiselect("Models", available_models, default=available_models, on_change=clear_state)
+            if task == "Regression":
+                st.caption("Bayesian Ridge and Gaussian Process report model-based predictive standard deviations. All six models receive calibration-based prediction intervals.")
             test_fraction = st.slider("Internal test fraction", 0.15, 0.35, 0.20, 0.05, on_change=clear_state)
             calibration_fraction = st.slider("Calibration fraction (from development pool)", 0.15, 0.35, 0.25, 0.05, on_change=clear_state)
             coverage = st.slider("Nominal regression prediction interval coverage", 0.80, 0.95, 0.90, 0.05, on_change=clear_state)
@@ -123,6 +153,10 @@ with tab_train:
                                 duration[name] = round(time.perf_counter()-start, 3)
                                 prediction = pipeline.predict(X_test)
                                 internal[name + "_prediction"] = prediction
+                                if task == "Regression":
+                                    std = model_prediction_std(pipeline, X_test, name)
+                                    if std is not None:
+                                        internal[name + "_predictive_std"] = std
                                 row = {"Model": name, **scores(y_test, prediction, task)}
                                 if task == "Regression":
                                     cal_pred = pipeline.predict(X_cal)
@@ -191,6 +225,10 @@ with tab_predict:
                                 pred = state["encoder"].inverse_transform(pred.astype(int))
                             out[name+"_prediction"] = pred
                             if state["task"] == "Regression":
+                                std = model_prediction_std(item["pipeline"], blind[state["features"]], name)
+                                if std is not None:
+                                    out[name+"_predictive_std"] = std
+                            if state["task"] == "Regression":
                                 out[name+"_lower"] = pred-item["q"]
                                 out[name+"_upper"] = pred+item["q"]
                         st.session_state["blind_predictions"] = {
@@ -255,4 +293,4 @@ with tab_validate:
                     st.error(f"External validation failed: {exc}")
 
 st.divider()
-st.caption("v0.2 | Internal test and calibration are separate. External outcomes never enter model fitting or interval calibration. Repeated tuning against the external set invalidates its independence.")
+st.caption("v0.3 | Six regression models; Bayesian/GPR predictive standard deviations are not calibrated intervals. Internal test and calibration are separate. External outcomes never enter model fitting or interval calibration. Repeated tuning against the external set invalidates its independence.")
