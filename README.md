@@ -1,4 +1,4 @@
-# ML Predictive Analysis Explorer v0.3
+# ML Predictive Analysis Explorer v0.4
 
 Streamlit research prototype comparing six regression models:
 - Random Forest
@@ -17,6 +17,10 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Model suitability and human approval (v0.4)
+
+Before training, select features, target, models, and split configuration, then click **1. Assess model suitability**. The screening evaluates the fit partition only, not the held-out test set. Review per-model findings and choose Proceed, Skip, or Proceed with override (with required rationale). Click **2. Record human approval**, download the CSV assessment and JSON approval audit, then click **3. Train approved models**. Changing data, target, features, models, or split settings invalidates the assessment and approval. These are heuristic warnings, not formal tests of statistical adequacy; evaluate residuals and external performance separately.
+
 ## Workflow
 
 1. Train: Upload labeled CSV; select regression, target, predictors and models. Shared fit/calibration/internal-test splits allow fair comparisons. Bayesian Ridge, Elastic Net and quadratic RSM use standardized numeric features. GPR uses a fitted kernel and is best suited to smaller datasets.
@@ -25,11 +29,11 @@ streamlit run app.py
 
 ## Reproducibility and interpretation
 
-The original 30-row external dataset has been inspected and is now a development benchmark, not an untouched final test set for v0.3 model selection. Reserve a new independent dataset for final assessment.
+The original 30-row external dataset has been inspected and is now a development benchmark, not an untouched final test set for v0.4 model selection. Reserve a new independent dataset for final assessment.
 
 All six models use absolute-residual split-conformal intervals from the same calibration partition. Bayesian Ridge/GPR predictive standard deviations are separate model-based uncertainty estimates; do not interpret them as calibrated confidence probabilities. GPR kernel fitting can be computationally expensive for larger datasets.
 
-The default v0.3 model parameters are illustrative, not optimized. This is a research prototype, not a qualified medical-device or regulatory decision tool. Do not upload proprietary data without authorization.
+The default v0.4 model parameters are illustrative, not optimized. This is a research prototype, not a qualified medical-device or regulatory decision tool. Do not upload proprietary data without authorization.
 
 ## v0.2 milestone
 
