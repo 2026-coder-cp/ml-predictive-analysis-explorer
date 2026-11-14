@@ -1,6 +1,9 @@
 import hashlib
 import io
 import time
+import json
+from datetime import datetime, timezone
+from suitability import assess, configuration_fingerprint, prepare_data
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,8 +23,8 @@ from sklearn.preprocessing import OneHotEncoder, LabelEncoder
 from xgboost import XGBClassifier, XGBRegressor
 
 st.set_page_config(page_title="ML Predictive Analysis Explorer", page_icon="📈", layout="wide")
-st.title("ML Predictive Analysis Explorer v0.3")
-st.caption("Six-model regression comparison | Independent training, blind prediction, and external validation")
+st.title("ML Predictive Analysis Explorer v0.4")
+st.caption("Model suitability → human approval → training → blind prediction → external validation")
 st.warning("Research-only prototype. Not qualified for regulated decisions. Do not upload confidential data without authorization.")
 
 def read_csv(upload):
@@ -90,6 +93,8 @@ def model_prediction_std(pipeline, x, name):
 def clear_state():
     st.session_state.pop("trained", None)
     st.session_state.pop("blind_predictions", None)
+    st.session_state.pop("suitability_report", None)
+    st.session_state.pop("approval_log", None)
 
 tab_train, tab_predict, tab_validate = st.tabs(["1. Train", "2. Predict unseen CSV", "3. External validation"])
 
@@ -114,13 +119,72 @@ with tab_train:
             calibration_fraction = st.slider("Calibration fraction (from development pool)", 0.15, 0.35, 0.25, 0.05, on_change=clear_state)
             coverage = st.slider("Nominal regression prediction interval coverage", 0.80, 0.95, 0.90, 0.05, on_change=clear_state)
             seed = st.number_input("Random seed", min_value=0, max_value=999999, value=42, on_change=clear_state)
-            if st.button("Train and retain models", type="primary"):
+            fingerprint_gate = configuration_fingerprint(upload.getvalue(), features, target, task, model_names, test_fraction, calibration_fraction, seed)
+            if st.session_state.get("suitability_report", {}).get("fingerprint") != fingerprint_gate:
+                st.session_state.pop("suitability_report", None)
+                st.session_state.pop("approval_log", None)
+                st.session_state.pop("trained", None)
+                st.session_state.pop("blind_predictions", None)
+            if st.button("1. Assess model suitability"):
+                try:
+                    report = assess(df, features, target, task, model_names, test_fraction, calibration_fraction, seed)
+                    st.session_state["suitability_report"] = {"fingerprint": fingerprint_gate, "report": report}
+                    st.session_state.pop("approval_log", None)
+                    st.session_state.pop("trained", None)
+                    st.session_state.pop("blind_predictions", None)
+                except Exception as exc:
+                    st.error(f"Assessment failed: {exc}")
+            gate = st.session_state.get("suitability_report")
+            if gate and gate["fingerprint"] == fingerprint_gate:
+                st.subheader("Pre-training suitability assessment")
+                st.caption("Advisory screening on fit-partition data only. It cannot establish residual assumptions or generalization before fitting.")
+                st.dataframe(gate["report"], use_container_width=True)
+                st.download_button("Download suitability CSV", gate["report"].to_csv(index=False),
+                                   file_name="model_suitability.csv", mime="text/csv")
+                decisions = {}
+                override_reasons = {}
+                for _, finding in gate["report"].iterrows():
+                    name = finding["Model"]
+                    status = finding["Status"]
+                    st.markdown(f"**{name} — {status}**")
+                    options = ["Proceed", "Skip"] if status == "Suitable" else ["Review", "Proceed with override", "Skip"]
+                    decision = st.selectbox(f"Decision for {name}", options, key="decision_"+name)
+                    decisions[name] = decision
+                    if decision == "Proceed with override":
+                        override_reasons[name] = st.text_input(f"Required override rationale for {name}", key="rationale_"+name)
+                unresolved = any(v == "Review" for v in decisions.values())
+                missing_reason = any(not value.strip() for value in override_reasons.values())
+                approved = [name for name, decision in decisions.items() if decision in ("Proceed", "Proceed with override")]
+                if st.button("2. Record human approval", disabled=unresolved or missing_reason or not approved):
+                    st.session_state["approval_log"] = {
+                        "fingerprint": fingerprint_gate, "decisions": decisions.copy(),
+                        "override_reasons": override_reasons.copy(),
+                        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                        "assessment": gate["report"].to_dict(orient="records")}
+                    st.success("Approval recorded. You may now train approved models.")
+                approval = st.session_state.get("approval_log")
+                if approval and approval["fingerprint"] == fingerprint_gate:
+                    st.download_button("Download approval audit JSON", json.dumps(approval, indent=2, default=str),
+                                       file_name="model_approval_audit.json", mime="application/json")
+            else:
+                st.info("Run suitability assessment before training.")
+            approval = st.session_state.get("approval_log")
+            approval_valid = bool(approval and approval["fingerprint"] == fingerprint_gate)
+            if approval_valid and gate:
+                approved_names = [name for name, decision in approval["decisions"].items()
+                                  if decision in ("Proceed", "Proceed with override")]
+                st.caption("Approved models: " + ", ".join(approved_names))
+            else:
+                approved_names = []
+            if st.button("3. Train approved models", type="primary", disabled=not approval_valid):
+                model_names = approved_names
+
                 if not features or not model_names:
                     st.error("Choose predictors and at least one model.")
                 elif len(set(features)) != len(features):
                     st.error("Duplicate feature names are unsupported.")
                 else:
-                    clean = df[features + [target]].dropna(subset=[target]).copy()
+                    clean = prepare_data(df, features, target, task)
                     X = clean[features]
                     y = clean[target]
                     if task == "Regression":
@@ -175,7 +239,7 @@ with tab_train:
                                 "encoder": encoder, "metrics": pd.DataFrame(metrics), "internal": internal,
                                 "n_fit": len(X_fit), "n_cal": len(X_cal), "n_test": len(X_test),
                                 "coverage": coverage, "seed": int(seed), "durations": duration,
-                                "fingerprint": fingerprint}
+                                "fingerprint": fingerprint, "approval": approval}
                             st.session_state.pop("blind_predictions", None)
                             st.success("Models trained and retained in this browser session.")
                         except Exception as exc:
@@ -293,4 +357,4 @@ with tab_validate:
                     st.error(f"External validation failed: {exc}")
 
 st.divider()
-st.caption("v0.3 | Six regression models; Bayesian/GPR predictive standard deviations are not calibrated intervals. Internal test and calibration are separate. External outcomes never enter model fitting or interval calibration. Repeated tuning against the external set invalidates its independence.")
+st.caption("v0.4 | Pre-fit suitability and recorded human approval; six regression models; Bayesian/GPR predictive standard deviations are not calibrated intervals. Internal test and calibration are separate. External outcomes never enter model fitting or interval calibration. Repeated tuning against the external set invalidates its independence.")
